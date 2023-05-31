@@ -11,22 +11,26 @@ NUM_CHARS = 5
 
 class WordleSolver:
     def __init__(self, env, debug=False):
-        self.debug = debug
+        self._debug = debug
         self.env = env
         data = [{
             'word': to_english(w),
             'word_index': w,
             'active': True,
             'entropy': 0,
-            } | {c: 0 for c in A_TO_Z} | {i: 'a' for i in range(NUM_CHARS)} for w in self.env.action_space]
+            } for w in self.env.action_space]
         self.guesses = pd.DataFrame(data=data)
-        for i, row in self.guesses.iterrows():
-            # Get a count of chars.
-            for char in A_TO_Z:
-                self.guesses.loc[i, char] = row['word'].count(char)
-            # Note what chars are in each position.
-            for j in range(NUM_CHARS):
-                self.guesses.loc[i, j] = row['word'][j]
+        # Get a count of chars.
+        for char in A_TO_Z:
+            self.guesses[char] = self.guesses['word'].str.count(char)
+        # Store the char in each position.
+        self.guesses = self.guesses.merge(
+            # List splits the word; the apply places each char in
+            # it's own numbered column, from 0 to (NUM_CHARS-1).
+            # https://stackoverflow.com/questions/43848680/pandas-split-dataframe-column-for-every-character
+            self.guesses['word'].apply(lambda w: pd.Series(list(w))),
+            left_index=True,
+            right_index=True)
  
     def update_from_state(self, state):
         '''
@@ -79,7 +83,10 @@ class WordleSolver:
         letter_probabilities = {}
         # Only count words that are still active.
         num_words = self.guesses[self.guesses['active']].shape[0]
-        if self.debug: print(f'\tnum_words remaining:\t{num_words}')
+        if self._debug: print(f'\tnum_words remaining:\t{num_words}')
+        # If there's zero or one words left, we don't need to
+        # calculate anything.
+        if num_words <= 1: return
         for c in A_TO_Z:
             letter_probabilities[c] = {j: 0 for j in range(NUM_CHARS)}
         for _, row in self.guesses.iterrows():
@@ -99,9 +106,10 @@ class WordleSolver:
                 self.guesses.loc[j, 'entropy'] -= p * np.log2(p)
 
     def get_next_guess(self, state=None):
-        if self.debug:
+        # TODO: this is slow; vectorize where possible.
+        if self._debug:
             print(f'Starting guess: {self.env.round + 1}')
-        if state is not None:
+        if state is not None and len(state) > 0:
             self.update_from_state(state)
         self.calc_entropies()
         # TODO: should I use entropy differently?
@@ -117,9 +125,38 @@ class WordleSolver:
         self.current_guess = self.env.action_space.index_of(next_word_index)
         return self.current_guess
     
-    def guess_blind(self, info={}):
+    def guess_blind(self, filter_known_solutions=False):
         # Make a guess based on provided info, w/o having the solution.
-        pass  # TODO
+        print('''
+        This is an interactive mode using the solver\'s
+        guesses, but with the user typing them into a real
+        Wordle client.
+        For each guess, type the word into Wordle and type the
+        results back here:
+        1 = green (right letter, right spot)
+        2 = yellow (right letter, wrong spot)
+        3 = grey (wrong letter)
+        For example, a guess of "stone" for a solution of "close"
+        would type "23131".
+        ''')
+        # Deactivate all solution words, since we assume there are never
+        # repeats. This is not always true since the NYT started
+        # curating solutions; use at your own risk.
+        if filter_known_solutions:
+            for word_array in self.env.solution_space.words:
+                word = to_english(word_array)
+                self.guesses.loc[self.guesses['word'] == word, 'active'] = False
+        state = []
+        for i in range(6):
+            # Set the env round to smooth things out for the guessing
+            # logic.
+            self.env.round = i
+            self.get_next_guess(state)
+            print(f'\tGuess {i}: {self.current_guess_english}')
+            new_state = [int(char) for char in input('\tResults:')]
+            # All ones means we got it.
+            if new_state == [1] * 5: break
+            state.append(new_state)
 
     def test_run(self, solution=None):
         # Start a test run with a given solution.
@@ -129,24 +166,24 @@ class WordleSolver:
             index = self.env.solution_space.index_of(to_array(solution))
             if index != -1:
                 self.env.solution = index
-        if self.debug:
-            print(f'solution:\t{to_english(env.solution_space[env.solution])}')
+        if self._debug:
+            print(f'solution:\t{to_english(self.env.solution_space[self.env.solution])}')
         done = False
         state = None
         total_reward = 0
         guesses = []
         while not done:
             action = self.get_next_guess(state)
-            guesses.append(to_english(env.action_space[action]))
-            if self.debug:
-                print(f'\tguess:\t{action} ({to_english(env.action_space[action])})')
-            state, reward, done, _ = env.step(action)
+            guesses.append(to_english(self.env.action_space[action]))
+            if self._debug:
+                print(f'\tguess:\t{action} ({to_english(self.env.action_space[action])})')
+            state, reward, done, _ = self.env.step(action)
             total_reward += reward
         return guesses, self.env.solution, total_reward
-
 
 if __name__ == '__main__':
     env = gym.make("Wordle-v0")
     agent = WordleSolver(env, debug=True)
-    guesses, solution, reward = agent.test_run('zebra')
-    print(guesses, solution, reward)
+    # guesses, solution, reward = agent.test_run('zebra')
+    # print(guesses, solution, reward)
+    agent.guess_blind()
