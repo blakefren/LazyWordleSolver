@@ -3,6 +3,15 @@ import gym_wordle
 import numpy as np
 import pandas as pd
 
+# TODO: gym_wordle has some implementation errors.
+# An example that demonstrates this is the solution "agile"
+# with guesses "sores" and "teene".
+# After guessing "sores", the returned state is [3 3 3 2 3] as
+# expected. However, after guessing "teene", the state is
+# [3 2 3 3 1], in which the "2" is incorrect as "agile" only has
+# a single "e". In contrast, the official Wordle site returns
+# [3 3 3 3 1], or ⬜⬜⬜⬜🟩.
+
 from gym_wordle.utils import to_english, to_array
 
 A_TO_Z = [chr(i) for i in range(ord('a'), ord('z') + 1)]
@@ -73,7 +82,7 @@ class WordleSolver:
                 else:
                     for j in range(NUM_CHARS):
                         self.guesses.loc[self.guesses[j] == char, 'active'] = False
-            else:  # case == 4
+            else:  # case == 0
                 continue
 
     def calc_entropies(self):
@@ -87,6 +96,8 @@ class WordleSolver:
         # If there's zero or one words left, we don't need to
         # calculate anything.
         if num_words <= 1: return
+        # Reset entropy values.
+        self.guesses.loc[self.guesses['active'], 'entropy'] = 0
         for c in A_TO_Z:
             letter_probabilities[c] = {j: 0 for j in range(NUM_CHARS)}
         for _, row in self.guesses.iterrows():
@@ -98,6 +109,7 @@ class WordleSolver:
             for i in range(NUM_CHARS):
                 letter_probabilities[char][i] /= num_words
         # Then, find the entropy of each guessable word.
+        # TODO: this is slow; vectorize where possible.
         for j, row in self.guesses.iterrows():
             w = row['word']
             for i, char in enumerate(w):
@@ -106,7 +118,6 @@ class WordleSolver:
                 self.guesses.loc[j, 'entropy'] -= p * np.log2(p)
 
     def get_next_guess(self, state=None):
-        # TODO: this is slow; vectorize where possible.
         if self._debug:
             print(f'Starting guess: {self.env.round + 1}')
         if state is not None and len(state) > 0:
@@ -148,12 +159,12 @@ class WordleSolver:
                 self.guesses.loc[self.guesses['word'] == word, 'active'] = False
         state = []
         for i in range(6):
-            # Set the env round to smooth things out for the guessing
-            # logic.
+            # Set the env round to smooth things out for the guessing logic.
             self.env.round = i
             self.get_next_guess(state)
             print(f'\tGuess {i}: {self.current_guess_english}')
             new_state = [int(char) for char in input('\tResults:')]
+            assert len(new_state) == NUM_CHARS
             # All ones means we got it.
             if new_state == [1] * 5: break
             state.append(new_state)
@@ -178,12 +189,14 @@ class WordleSolver:
             if self._debug:
                 print(f'\tguess:\t{action} ({to_english(self.env.action_space[action])})')
             state, reward, done, _ = self.env.step(action)
+            if self._debug:
+                print(f'\tnext state:\t{state[self.env.round - 1]}')
             total_reward += reward
         return guesses, self.env.solution, total_reward
 
 if __name__ == '__main__':
     env = gym.make("Wordle-v0")
     agent = WordleSolver(env, debug=True)
-    # guesses, solution, reward = agent.test_run('zebra')
+    # guesses, solution, reward = agent.test_run('agile')
     # print(guesses, solution, reward)
     agent.guess_blind()
